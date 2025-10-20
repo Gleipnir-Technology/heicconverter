@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"image/jpeg"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -33,12 +34,15 @@ func main_() int {
 	var deleteOnSuccess bool
 	var forceOverwrite bool
 	var version bool
+	var output string
 	flag.BoolVar(&findAll, "all", false, "")
 	flag.BoolVar(&findAll, "a", false, "")
 	flag.BoolVar(&deleteOnSuccess, "delete", false, "")
 	flag.StringVar(&singleFile, "file", "", "")
 	flag.StringVar(&singleFile, "f", "", "")
 	flag.BoolVar(&forceOverwrite, "overwrite", false, "")
+	flag.StringVar(&output, "output", "png", "")
+	flag.StringVar(&output, "o", "", "")
 	flag.IntVar(&numWorkers, "procs", runtime.NumCPU(), "")
 	flag.IntVar(&numWorkers, "p", runtime.NumCPU(), "")
 	flag.BoolVar(&version, "version", false, "")
@@ -49,6 +53,7 @@ func main_() int {
       --delete  · · · · ·   delete original heic file after successfull conversion
   -f, --file    <filename>  specify a single heic file to convert to .png
       --overwrite · · · ·   if target png file already exists, overwrite it
+  -o, --output  <format>    The output type to use (jpg, png). Default 'png'
   -p, --procs   <num_procs> max number of files to process in parallel (default %d)
   -v, --version · · · · ·   print version information and exit
   -h, --help    · · · · ·   print this message and exit
@@ -60,6 +65,11 @@ func main_() int {
 	if version {
 		fmt.Printf("Version: %s\nBuilt On: %s\n", Version, BuildTimestamp)
 		return 0
+	}
+
+	if output != "png" && output != "jpg" {
+		fmt.Printf("Requested output '%s' is not a supported format. Use one of 'jpg' or 'png'.", output)
+		return -2
 	}
 
 	if !findAll && len(singleFile) == 0 {
@@ -129,9 +139,9 @@ func main_() int {
 			for t := range chTasks {
 				fid := frog.Int("worker_id", thread)
 				fheic := frog.String("heic_path", t.HeicPath)
-				fpng := frog.String("png_path", t.PngPath)
+				fpng := frog.String("png_path", t.OutputPath)
 
-				err := convertHeicToPng(t.HeicPath, t.PngPath, forceOverwrite, func(step, max int) {
+				err := convertHeic(t.HeicPath, t.OutputPath, output, forceOverwrite, func(step, max int) {
 					l.Transient("converting: "+progressBar(step, max, '·', '☆'), fheic, fpng, fid)
 				})
 				if err != nil {
@@ -159,8 +169,8 @@ func main_() int {
 	// send work to workers
 	for _, v := range filelist {
 		chTasks <- Task{
-			HeicPath: v,
-			PngPath:  removeExt(v) + ".png",
+			HeicPath:   v,
+			OutputPath: removeExt(v) + "." + output,
 		}
 	}
 
@@ -173,11 +183,11 @@ func main_() int {
 }
 
 type Task struct {
-	HeicPath string
-	PngPath  string
+	HeicPath   string
+	OutputPath string
 }
 
-func convertHeicToPng(filenameIn, filenameOut string, forceOverwrite bool, fnProgress func(step, max int)) error {
+func convertHeic(filenameIn, filenameOut, format string, forceOverwrite bool, fnProgress func(step, max int)) error {
 	if fnProgress == nil {
 		fnProgress = func(_, _ int) {}
 	}
@@ -208,10 +218,18 @@ func convertHeicToPng(filenameIn, filenameOut string, forceOverwrite bool, fnPro
 	defer fOut.Close()
 
 	fnProgress(3, 4)
-	pngenc := png.Encoder{CompressionLevel: png.BestSpeed}
-	err = pngenc.Encode(fOut, img)
-	if err != nil {
-		return fmt.Errorf("unable to encode %s: %w", filenameOut, err)
+	if format == "png" {
+		pngenc := png.Encoder{CompressionLevel: png.BestSpeed}
+		err = pngenc.Encode(fOut, img)
+		if err != nil {
+			return fmt.Errorf("unable to encode %s: %w", filenameOut, err)
+		}
+	} else if format == "jpg" {
+		options := jpeg.Options{Quality: 50}
+		err = jpeg.Encode(fOut, img, &options)
+		if err != nil {
+			return fmt.Errorf("unable to encode %s: %w", filenameOut, err)
+		}
 	}
 
 	fnProgress(4, 4)
